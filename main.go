@@ -14,13 +14,12 @@ import (
 
 func main() {
 	configFile := "./noop_config.json"
-	schemaFile := "./db_config_schema.json"
 
 	if len(os.Args) > 1 {
 		configFile = os.Args[1]
 	}
 
-	backuper.Validate(schemaFile, configFile)
+	backuper.Validate(configFile)
 	config, err := backuper.ParseConfig(configFile)
 	if err != nil {
 		log.Fatalf("Error parsing config file: %v", err)

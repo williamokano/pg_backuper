@@ -14,7 +14,7 @@ func ExtractDateFromFilename(filename string) time.Time {
 		return time.Time{}
 	}
 
-	dateTimeStr := strings.TrimSuffix(parts[1], filepath.Ext(base))
+	dateTimeStr := strings.TrimSuffix(strings.Join(parts[1:], "_"), filepath.Ext(base))
 	layout := "2006-01-02_15-04-05"
 
 	t, err := time.Parse(layout, dateTimeStr)
