@@ -1,0 +1,6 @@
+{
+  "databases": [],
+  "backup_dir": "/tmp",
+  "retention": 1,
+  "log_file": "/tmp/pg_backuper.log"
+}

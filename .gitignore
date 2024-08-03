@@ -1,0 +1,3 @@
+# Avoid accidentaly publishing the configs
+*_config.json
+!noop_config.json
