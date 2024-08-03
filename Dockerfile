@@ -39,7 +39,6 @@ COPY --from=builder /app/pg_backuper /usr/local/bin/pg_backuper
 COPY db_config_schema.json ./db_config_schema.json
 COPY noop_config.json ./noop_config.json
 COPY entrypoint.sh ./entrypoint.sh
-COPY docker_bin.sh ./docker_bin.sh
 
 # Copy the crontab file and set up cron
 COPY crontab /etc/cron.d/pg_backuper-cron
@@ -53,6 +52,5 @@ ENV CONFIG_FILE="/app/noop_config.json"
 ENV POSTGRES_VERSION=${POSTGRES_VERSION}
 
 RUN chmod +x /app/entrypoint.sh
-RUN chmod +x /app/docker_bin.sh
 # Set the entrypoint to the Go app
 ENTRYPOINT ["/app/entrypoint.sh"]
