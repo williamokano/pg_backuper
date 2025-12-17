@@ -1,51 +1,429 @@
-# pg_backuper
+# pg_backuper v2.0
 
-It does backups periodically keeping the retention limit.
+Automated PostgreSQL backup solution with multi-tier retention, parallel execution, and secure password management.
 
-Configurable databases.
+## ⚠️ Breaking Changes in v2.0
 
-It doesn't support, yet, parallelism nor concurrency. Feel free to add support to it if it bothers you.
+If you're upgrading from v1.0, see [MIGRATION.md](MIGRATION.md) for detailed upgrade instructions.
 
-If you really really really need concurrent backups, just run it several times with different configuration files.
+Key changes:
+- New configuration format with multi-tier retention
+- Passwords moved to `.pgpass` file (more secure)
+- Parallel backup execution (faster)
+- Structured JSON logging
 
-## Configuration file example
+## Features
 
+- 🔄 **Multi-tier retention**: Hourly, daily, weekly, monthly, quarterly, yearly backup policies
+- ⚡ **Parallel execution**: Backup multiple databases concurrently with configurable limits
+- 🔒 **Secure**: Passwords in `.pgpass` file (PostgreSQL standard), not in process list
+- 📊 **Structured logging**: JSON logs for easy parsing and monitoring
+- 🐳 **Docker-ready**: Designed for Docker/Portainer with cron scheduling
+- ⚙️ **Flexible configuration**: Global defaults with per-database overrides
+- 🔧 **Migration tool**: Automatic conversion from v1 to v2 config
+
+## Quick Start
+
+### 1. Create Configuration Files
+
+**config.json**:
 ```json
 {
+  "backup_dir": "/backups",
+  "global_defaults": {
+    "port": 5432,
+    "retention_tiers": [
+      {"tier": "hourly", "retention": 6},
+      {"tier": "daily", "retention": 7},
+      {"tier": "weekly", "retention": 4},
+      {"tier": "monthly", "retention": 3}
+    ],
+    "pgpass_file": "/config/.pgpass"
+  },
+  "max_concurrent_backups": 3,
+  "log_level": "info",
+  "log_format": "json",
   "databases": [
     {
-      "name": "sonarr-main",
-      "user": "sonarr",
-      "password": "sonarr",
-      "host": "192.168.0.65"
-    },
-    {
-      "name": "sonarr-log",
-      "user": "sonarr",
-      "password": "sonarr",
-      "host": "192.168.0.65"
+      "name": "myapp",
+      "user": "postgres",
+      "host": "localhost"
     }
-  ],
-  "backup_dir": "/backups",
-  "retention": 1,
-  "log_file": "/backups"
+  ]
 }
 ```
 
-## Easiest way to configure
-- Create the config file and map it to `/config/dbs.json` following the above config
-- Create a mapping `/backups` in the docker
-- Set the env var `CONFIG_FILE="/config/dbs.json`
-- Set the env var `CRON_SCHEDULE=""` to your liking. Default is `0 3 * * *`. Run 3AM everyday. 🤷‍
+**.pgpass** (create with `chmod 600 .pgpass`):
+```
+# Format: hostname:port:database:username:password
+localhost:5432:*:postgres:your_password_here
+```
 
-## Maybe useful commands
-### Build
-`docker build -t pg_backuper:local .`
+### 2. Docker Deployment
 
-### Shell into docker
-`docker run --network host --name pg_backuper_container -v /Users/w.dos/pgsql_backups:/backups -v $(pwd):/cwdd -e CONFIG_FILE="/cwdd/test_config.json" -e CRON_SCHEDULE="*/1 * * * *" --rm -it --entrypoint /bin/bash pg_backuper:local`
+**Docker Compose**:
+```yaml
+version: '3.8'
+services:
+  pg_backuper:
+    image: pg_backuper:v2.0
+    volumes:
+      - ./config:/config:ro        # Config folder with config.json and .pgpass
+      - ./backups:/backups          # Backup storage
+    environment:
+      - CONFIG_FILE=/config/config.json
+      - CRON_SCHEDULE=0 3 * * *     # 3 AM daily
+```
 
-It won't start the `entrypoint.sh`, must do manually, otherwise cron won't run
+**Portainer**:
+- Volume mappings:
+  - `/path/to/config:/config` (read-only)
+  - `/path/to/backups:/backups`
+- Environment variables:
+  - `CONFIG_FILE=/config/config.json`
+  - `CRON_SCHEDULE=0 3 * * *`
 
-## Note
-Only tested in postgresql 16.2
+### 3. Run
+
+```bash
+# Build
+docker build -t pg_backuper:v2.0 .
+
+# Run
+docker-compose up -d
+
+# Check logs
+docker logs -f pg_backuper
+```
+
+## Configuration Reference
+
+### Top-Level Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `backup_dir` | string | ✅ | Directory where backups are stored |
+| `global_defaults` | object | ❌ | Default values for all databases |
+| `max_concurrent_backups` | integer | ❌ | Max parallel backups (default: 3) |
+| `log_level` | string | ❌ | `debug`, `info`, `warn`, `error` (default: `info`) |
+| `log_format` | string | ❌ | `json`, `console` (default: `json`) |
+| `databases` | array | ✅ | List of databases to backup |
+
+### Global Defaults
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | integer | Default PostgreSQL port (default: 5432) |
+| `retention_tiers` | array | Default retention policy |
+| `pgpass_file` | string | Path to .pgpass file (default: auto-detect) |
+
+### Database Configuration
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | ✅ | Database name |
+| `user` | string | ✅ | PostgreSQL username |
+| `host` | string | ✅ | Database host |
+| `port` | integer | ❌ | Override global port |
+| `retention_tiers` | array | ❌ | Override global retention |
+| `enabled` | boolean | ❌ | Enable/disable (default: true) |
+
+### Retention Tiers
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tier` | string | `hourly`, `daily`, `weekly`, `monthly`, `quarterly`, `yearly` |
+| `retention` | integer | Number to keep (0 = unlimited) |
+
+## Configuration Examples
+
+### Simple Setup
+
+Keep last 7 daily backups:
+
+```json
+{
+  "backup_dir": "/backups",
+  "global_defaults": {
+    "retention_tiers": [
+      {"tier": "daily", "retention": 7}
+    ]
+  },
+  "databases": [
+    {
+      "name": "mydb",
+      "user": "postgres",
+      "host": "db.example.com"
+    }
+  ]
+}
+```
+
+### Comprehensive Retention
+
+```json
+{
+  "backup_dir": "/backups",
+  "global_defaults": {
+    "port": 5432,
+    "retention_tiers": [
+      {"tier": "hourly", "retention": 24},
+      {"tier": "daily", "retention": 7},
+      {"tier": "weekly", "retention": 4},
+      {"tier": "monthly", "retention": 12},
+      {"tier": "quarterly", "retention": 4},
+      {"tier": "yearly", "retention": 3}
+    ],
+    "pgpass_file": "/config/.pgpass"
+  },
+  "max_concurrent_backups": 5,
+  "log_level": "info",
+  "log_format": "json",
+  "databases": [
+    {
+      "name": "production",
+      "user": "backup_user",
+      "host": "prod.db.example.com"
+    }
+  ]
+}
+```
+
+### Per-Database Overrides
+
+```json
+{
+  "backup_dir": "/backups",
+  "global_defaults": {
+    "port": 5432,
+    "retention_tiers": [
+      {"tier": "daily", "retention": 7}
+    ]
+  },
+  "databases": [
+    {
+      "name": "critical_db",
+      "user": "postgres",
+      "host": "critical.example.com",
+      "port": 5433,
+      "retention_tiers": [
+        {"tier": "hourly", "retention": 24},
+        {"tier": "daily", "retention": 30},
+        {"tier": "monthly", "retention": 12}
+      ]
+    },
+    {
+      "name": "test_db",
+      "user": "postgres",
+      "host": "test.example.com",
+      "enabled": false
+    }
+  ]
+}
+```
+
+## Multi-Tier Retention
+
+Backups are automatically categorized by age:
+
+| Tier | Age Range | Use Case |
+|------|-----------|----------|
+| **hourly** | 0-24 hours | Recent recovery points |
+| **daily** | 1-7 days | Last week's snapshots |
+| **weekly** | 7-30 days | Last month's backups |
+| **monthly** | 30-90 days | Quarterly archives |
+| **quarterly** | 90-365 days | Annual archives |
+| **yearly** | >365 days | Long-term storage |
+
+**How it works:**
+1. Tool analyzes each backup's age
+2. Assigns to appropriate tier automatically
+3. Applies retention policy per tier
+4. Deletes oldest backups in each tier beyond limit
+
+**Example:** With `[{"tier": "hourly", "retention": 6}, {"tier": "daily", "retention": 7}]`:
+- Keeps last 6 backups that are <24h old
+- Keeps last 7 backups that are 1-7 days old
+- Other tiers: keeps all (no limit)
+
+## Logging
+
+### JSON Format (Default)
+
+```json
+{"level":"info","time":"2025-12-17T03:00:00Z","message":"starting pg_backuper v2.0","config_file":"/config/config.json"}
+{"level":"info","database":"mydb","message":"starting backup","backup_file":"/backups/mydb--2025-12-17T03-00-00.backup"}
+{"level":"info","database":"mydb","message":"backup completed","duration":1250}
+{"level":"info","database":"mydb","tier":"hourly","message":"deleted backup file","file":"/backups/mydb--2025-12-16T03-00-00.backup"}
+```
+
+### Console Format
+
+Set `log_format: "console"`:
+```
+3:00AM INF starting pg_backuper v2.0 config_file=/config/config.json
+3:00AM INF starting backup database=mydb backup_file=/backups/mydb--2025-12-17T03-00-00.backup
+3:01AM INF backup completed database=mydb duration=1250
+3:01AM INF deleted backup file database=mydb tier=hourly file=/backups/mydb--2025-12-16T03-00-00.backup
+```
+
+## Security
+
+### .pgpass File
+
+PostgreSQL's standard password file format:
+
+```
+# hostname:port:database:username:password
+prod-db:5432:*:backup_user:secret123
+staging-db:5433:*:backup_user:staging_pass
+```
+
+**Key points:**
+- Must have `0600` permissions (owner read/write only)
+- Supports wildcards (`*`) for flexible matching
+- Passwords never appear in process list
+- Standard PostgreSQL authentication method
+
+**Setup:**
+```bash
+# Create .pgpass
+touch .pgpass
+chmod 600 .pgpass
+
+# Add entries
+echo "localhost:5432:*:postgres:mypassword" >> .pgpass
+
+# Verify
+ls -l .pgpass  # Should show -rw-------
+```
+
+## Parallel Execution
+
+Backups run concurrently with configurable limits:
+
+```json
+{
+  "max_concurrent_backups": 3
+}
+```
+
+**How it works:**
+- Uses semaphore for resource control
+- Fail-fast on first error (cancels remaining)
+- Per-database timing tracked
+- Optimal resource utilization
+
+**Tuning:**
+- **Disk I/O bound**: Keep low (2-4)
+- **Network bound**: Can increase (5-10)
+- **Default**: 3 (balanced)
+
+## Building
+
+```bash
+# Build main application
+go build -o pg_backuper .
+
+# Build migration tool
+go build -o migrate ./cmd/migrate
+
+# Build Docker image
+docker build -t pg_backuper:v2.0 .
+
+# Run tests
+go test ./...
+```
+
+## Migration from v1.0
+
+See [MIGRATION.md](MIGRATION.md) for detailed instructions.
+
+**Quick migration:**
+```bash
+# Build migration tool
+go build -o migrate ./cmd/migrate
+
+# Run migration (creates config.json and .pgpass)
+./migrate old_config.json /path/to/new-config-dir/
+
+# Deploy with new config
+docker run -v /path/to/new-config-dir:/config pg_backuper:v2.0
+```
+
+## Troubleshooting
+
+### Authentication Errors
+
+**"password authentication failed"**
+- Check `.pgpass` exists and has correct entries
+- Verify permissions: `chmod 600 .pgpass`
+- Test manually: `PGPASSFILE=/path/to/.pgpass pg_dump ...`
+
+### Backup Failures
+
+**"pg_dump: command not found"**
+- Ensure postgresql-client is installed
+- Check `POSTGRES_VERSION` build arg in Dockerfile
+
+**"permission denied" on backup_dir**
+- Ensure directory exists and is writable
+- Check Docker volume mappings
+
+### Configuration Issues
+
+**"configuration validation failed"**
+- Run `pg_backuper /path/to/config.json` to see detailed errors
+- Check JSON syntax
+- Verify required fields present
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CONFIG_FILE` | `/app/noop_config.json` | Path to config file |
+| `CRON_SCHEDULE` | `0 3 * * *` | Cron expression for backup schedule |
+| `POSTGRES_VERSION` | `16` | PostgreSQL client version (build arg) |
+
+## File Formats
+
+### Backup Filenames
+
+**New format (v2.0):**
+```
+dbname--2025-12-17T03-00-00.backup
+```
+
+**Old format (v1.0, still supported):**
+```
+dbname_2025-12-17_03-00-00.backup
+```
+
+Tool automatically detects and handles both formats during rotation.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for version history and breaking changes.
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file
+
+## Contributing
+
+Contributions welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Submit a pull request
+
+## Support
+
+- Issues: https://github.com/williamokano/pg_backuper/issues
+- Documentation: This README and [MIGRATION.md](MIGRATION.md)
+
+## Tested With
+
+- PostgreSQL 16.2 (primary)
+- Docker / Portainer
+- Go 1.22+
