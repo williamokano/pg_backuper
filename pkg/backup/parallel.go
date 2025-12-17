@@ -63,21 +63,26 @@ func BackupAllDatabases(ctx context.Context, cfg *config.Config, timestamp time.
 			default:
 			}
 
-			// Check if backup is due
-			isDue, err := IsBackupDue(cfg, db, timestamp, logger)
+			// Check which tiers are due for backup
+			schedule, err := GetDueTiers(cfg, db, timestamp, logger)
 			if err != nil {
 				logger.Warn().
 					Err(err).
 					Str("database", db.Name).
-					Msg("error checking if backup is due, proceeding with backup")
-				isDue = true // On error, proceed with backup to be safe
+					Msg("error checking which tiers are due, skipping backup")
+				// Return an error result
+				resultsChan <- Result{
+					Database: db.Name,
+					Success:  false,
+					Error:    fmt.Errorf("failed to check tier schedule: %w", err),
+					Duration: 0,
+				}
+				return nil
 			}
 
-			if !isDue {
-				logger.Info().
-					Str("database", db.Name).
-					Msg("backup not due yet, skipping")
-				// Return a success result for skipped backup
+			if len(schedule.Due) == 0 {
+				// No tiers due, skip backup
+				// (detailed logging already done in GetDueTiers)
 				resultsChan <- Result{
 					Database: db.Name,
 					Success:  true,
@@ -87,8 +92,8 @@ func BackupAllDatabases(ctx context.Context, cfg *config.Config, timestamp time.
 				return nil
 			}
 
-			// Perform backup
-			result := BackupDatabase(cfg, db, timestamp, logger)
+			// Perform backup for all due tiers
+			result := BackupDatabase(cfg, db, timestamp, schedule.Due, logger)
 			resultsChan <- result
 
 			// If backup failed, return error (will cancel other operations)

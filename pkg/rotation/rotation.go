@@ -29,21 +29,22 @@ func RotateBackups(backupDir string, dbName string, retentionTiers []config.Rete
 		return nil
 	}
 
-	// Parse backup files and extract timestamps
+	// Parse backup files and extract timestamps and tier tags
 	var backups []BackupFile
 	for _, file := range files {
-		timestamp, err := ExtractDateFromFilename(file)
+		components, err := ParseBackupFilename(file)
 		if err != nil {
 			dbLogger.Warn().
 				Err(err).
 				Str("file", file).
-				Msg("skipping file with invalid date format")
+				Msg("skipping file with invalid format")
 			continue
 		}
 
 		backups = append(backups, BackupFile{
-			Path:      file,
-			Timestamp: timestamp,
+			Path:         file,
+			Timestamp:    components.Timestamp,
+			CreationTier: components.Tier, // May be empty for old untagged backups
 		})
 	}
 

@@ -12,9 +12,10 @@ import (
 
 // BackupFile represents a backup file with its metadata
 type BackupFile struct {
-	Path      string
-	Timestamp time.Time
-	Tier      TierName
+	Path         string
+	Timestamp    time.Time
+	Tier         TierName // Age-based tier (calculated during retention)
+	CreationTier string   // Tier tag from filename (empty if untagged)
 }
 
 // ApplyRetention applies the retention policy to a set of backup files
