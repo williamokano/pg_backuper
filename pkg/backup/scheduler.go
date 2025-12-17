@@ -67,14 +67,27 @@ func IsBackupDue(cfg *config.Config, db config.DatabaseConfig, now time.Time, lo
 	timeSinceLastBackup := now.Sub(lastBackupTime)
 	isDue := timeSinceLastBackup >= shortestInterval
 
-	logger.Debug().
-		Str("database", db.Name).
-		Str("shortest_tier", tierName).
-		Dur("shortest_interval", shortestInterval).
-		Time("last_backup", lastBackupTime).
-		Dur("time_since_last", timeSinceLastBackup).
-		Bool("is_due", isDue).
-		Msg("checked if backup is due")
+	if isDue {
+		logger.Info().
+			Str("database", db.Name).
+			Str("tier", tierName).
+			Dur("interval", shortestInterval).
+			Time("last_backup", lastBackupTime).
+			Dur("time_since_last", timeSinceLastBackup).
+			Msg("backup is due")
+	} else {
+		timeUntilDue := shortestInterval - timeSinceLastBackup
+		nextBackupTime := lastBackupTime.Add(shortestInterval)
+		logger.Info().
+			Str("database", db.Name).
+			Str("tier", tierName).
+			Dur("interval", shortestInterval).
+			Time("last_backup", lastBackupTime).
+			Dur("time_since_last", timeSinceLastBackup).
+			Dur("time_until_due", timeUntilDue).
+			Time("next_backup", nextBackupTime).
+			Msg("backup not due yet")
+	}
 
 	return isDue, nil
 }
