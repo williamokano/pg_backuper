@@ -231,6 +231,13 @@ func findLastBackupTimeByTier(backupDir, dbName, tierName string) (time.Time, er
 			continue
 		}
 
+		// CRITICAL: Validate file exists and has content (skip 0-byte failed backups)
+		fileInfo, err := os.Stat(match)
+		if err != nil || fileInfo.Size() == 0 {
+			// Skip files that don't exist or are empty
+			continue
+		}
+
 		if components.Timestamp.After(mostRecent) {
 			mostRecent = components.Timestamp
 		}

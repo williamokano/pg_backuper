@@ -53,23 +53,29 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 	// Get .pgpass file path (shared across all tier backups)
 	pgpassPath, pgpassErr := GetPgpassPath(cfg.GetPgpassFile())
 	if pgpassErr != nil {
-		// Log warning but continue - pg_dump might work with trust auth or other methods
-		dbLog.Warn().
+		// FAIL FAST: .pgpass file must exist for backup to succeed
+		result.Error = fmt.Errorf(".pgpass file not found: %w", pgpassErr)
+		result.Duration = time.Since(start)
+		dbLog.Error().
 			Err(pgpassErr).
-			Msg(".pgpass file not found, pg_dump will use alternative authentication")
-	} else {
-		// Validate permissions
-		if err := ValidatePgpassPermissions(pgpassPath); err != nil {
-			dbLog.Warn().
-				Err(err).
-				Str("pgpass_path", pgpassPath).
-				Msg(".pgpass file has incorrect permissions")
-		} else {
-			dbLog.Debug().
-				Str("pgpass_path", pgpassPath).
-				Msg("using .pgpass for authentication")
-		}
+			Msg("FATAL: .pgpass file not found - cannot authenticate to database")
+		return result
 	}
+
+	// FAIL FAST: Validate permissions - PostgreSQL will refuse to use the file if permissions are wrong
+	if err := ValidatePgpassPermissions(pgpassPath); err != nil {
+		result.Error = fmt.Errorf(".pgpass file has incorrect permissions: %w", err)
+		result.Duration = time.Since(start)
+		dbLog.Error().
+			Err(err).
+			Str("pgpass_path", pgpassPath).
+			Msg("FATAL: .pgpass file must have 0600 permissions - run: chmod 600 /config/.pgpass")
+		return result
+	}
+
+	dbLog.Debug().
+		Str("pgpass_path", pgpassPath).
+		Msg("using .pgpass for authentication")
 
 	// Create one backup per due tier
 	for _, tier := range dueTiers {
