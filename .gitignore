@@ -1,3 +1,7 @@
 # Avoid accidentaly publishing the configs
 *_config.json
 !noop_config.json
+
+# Binaries
+pg_backuper
+migrate
