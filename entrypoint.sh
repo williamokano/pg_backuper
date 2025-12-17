@@ -13,11 +13,13 @@ echo "=== Crontab configuration ==="
 cat /etc/cron.d/pg_backuper-cron
 echo "=========================="
 
-# Run initial backup if RUN_ON_STARTUP is set
-if [ "${RUN_ON_STARTUP}" = "true" ]; then
-    echo "=== Running initial backup (RUN_ON_STARTUP=true) ==="
+# Run initial backup on startup (can be disabled with RUN_ON_STARTUP=false)
+if [ "${RUN_ON_STARTUP}" != "false" ]; then
+    echo "=== Running initial backup on container start ==="
     /usr/local/bin/pg_backuper "${CONFIG_FILE}" 2>&1
     echo "=== Initial backup completed ==="
+else
+    echo "=== Skipping initial backup (RUN_ON_STARTUP=false) ==="
 fi
 
 # Calculate next cron run time
