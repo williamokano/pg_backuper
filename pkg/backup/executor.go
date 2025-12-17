@@ -108,11 +108,47 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 				Err(err).
 				Msg("backup failed for tier")
 			result.TiersFailed = append(result.TiersFailed, tier)
+
+			// Clean up failed backup file (may be 0 bytes)
+			if removeErr := os.Remove(backupFile); removeErr != nil {
+				tierLog.Warn().
+					Err(removeErr).
+					Str("file", backupFile).
+					Msg("failed to remove incomplete backup file")
+			} else {
+				tierLog.Info().
+					Str("file", backupFile).
+					Msg("removed incomplete backup file")
+			}
+
 			// Continue with other tiers even if this one fails
 			continue
 		}
 
-		tierLog.Info().Msg("backup completed for tier")
+		// Verify backup file was actually created and has content
+		fileInfo, err := os.Stat(backupFile)
+		if err != nil {
+			tierLog.Error().
+				Err(err).
+				Str("file", backupFile).
+				Msg("backup file not found after pg_dump")
+			result.TiersFailed = append(result.TiersFailed, tier)
+			continue
+		}
+
+		if fileInfo.Size() == 0 {
+			tierLog.Error().
+				Str("file", backupFile).
+				Msg("backup file is empty (0 bytes)")
+			result.TiersFailed = append(result.TiersFailed, tier)
+			// Remove the empty file
+			os.Remove(backupFile)
+			continue
+		}
+
+		tierLog.Info().
+			Int64("size_bytes", fileInfo.Size()).
+			Msg("backup completed for tier")
 		result.TiersCompleted = append(result.TiersCompleted, tier)
 	}
 
@@ -134,19 +170,25 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 			Msg("all tier backups completed successfully")
 	}
 
-	// Perform rotation once after all tier backups
-	retentionTiers := db.GetRetentionTiers(cfg.GlobalDefaults)
-	if len(retentionTiers) == 0 {
-		dbLog.Warn().Msg("no retention tiers configured, skipping rotation")
-	} else {
-		dbLog.Info().
-			Int("tier_count", len(retentionTiers)).
-			Msg("applying retention policy")
+	// Perform rotation only if at least one backup succeeded
+	// CRITICAL: Never delete old backups if all new backups failed
+	if len(result.TiersCompleted) > 0 {
+		retentionTiers := db.GetRetentionTiers(cfg.GlobalDefaults)
+		if len(retentionTiers) == 0 {
+			dbLog.Warn().Msg("no retention tiers configured, skipping rotation")
+		} else {
+			dbLog.Info().
+				Int("tier_count", len(retentionTiers)).
+				Strs("completed_tiers", result.TiersCompleted).
+				Msg("applying retention policy")
 
-		if err := rotation.RotateBackups(cfg.BackupDir, db.Name, retentionTiers, dbLog); err != nil {
-			dbLog.Error().Err(err).Msg("rotation failed")
-			// Don't fail the backup operation if rotation fails
+			if err := rotation.RotateBackups(cfg.BackupDir, db.Name, retentionTiers, dbLog); err != nil {
+				dbLog.Error().Err(err).Msg("rotation failed")
+				// Don't fail the backup operation if rotation fails
+			}
 		}
+	} else {
+		dbLog.Warn().Msg("skipping rotation - no successful backups created")
 	}
 
 	return result
