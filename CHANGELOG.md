@@ -25,6 +25,13 @@ All notable changes to pg_backuper will be documented in this file.
 - Fail-fast error handling with context cancellation
 - Per-database timing and result tracking
 
+#### Smart Scheduling
+- Intelligent backup scheduling based on retention tier configuration
+- Automatically determines backup frequency from configured tiers
+- Cron runs hourly, tool decides if backup is due
+- Prevents cron misconfiguration errors
+- Skipped backups are logged with clear reasoning
+
 #### Enhanced Configuration
 - Global defaults with per-database overrides for port and retention
 - Configurable log level (`debug`, `info`, `warn`, `error`)
@@ -57,6 +64,9 @@ All notable changes to pg_backuper will be documented in this file.
 - Backup filename format now uses `--` separator and ISO-8601-like timestamps
 - Log output defaults to structured JSON instead of plain text
 - Process exits with code 1 if any backup fails (was continuing silently)
+- Docker base image upgraded to Debian Trixie (from Bullseye)
+- Go upgraded to 1.24 (from 1.22)
+- Cron schedule fixed to hourly execution (CRON_SCHEDULE env var removed)
 
 ### 🚀 Migration
 

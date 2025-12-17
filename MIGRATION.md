@@ -91,7 +91,6 @@ services:
       - /path/to/backups:/backups
     environment:
       - CONFIG_FILE=/config/config.json
-      - CRON_SCHEDULE=0 3 * * *  # 3 AM daily
 ```
 
 **Or in Portainer UI:**

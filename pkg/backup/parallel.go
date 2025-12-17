@@ -63,6 +63,30 @@ func BackupAllDatabases(ctx context.Context, cfg *config.Config, timestamp time.
 			default:
 			}
 
+			// Check if backup is due
+			isDue, err := IsBackupDue(cfg, db, timestamp, logger)
+			if err != nil {
+				logger.Warn().
+					Err(err).
+					Str("database", db.Name).
+					Msg("error checking if backup is due, proceeding with backup")
+				isDue = true // On error, proceed with backup to be safe
+			}
+
+			if !isDue {
+				logger.Info().
+					Str("database", db.Name).
+					Msg("backup not due yet, skipping")
+				// Return a success result for skipped backup
+				resultsChan <- Result{
+					Database: db.Name,
+					Success:  true,
+					Skipped:  true,
+					Duration: 0,
+				}
+				return nil
+			}
+
 			// Perform backup
 			result := BackupDatabase(cfg, db, timestamp, logger)
 			resultsChan <- result

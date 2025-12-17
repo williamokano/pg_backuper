@@ -53,11 +53,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Count successes and failures
+	// Count successes, skips, and failures
 	successCount := 0
+	skippedCount := 0
 	failureCount := 0
 	for _, result := range results {
-		if result.Success {
+		if result.Skipped {
+			skippedCount++
+		} else if result.Success {
 			successCount++
 		} else {
 			failureCount++
@@ -66,6 +69,7 @@ func main() {
 
 	log.Info().
 		Int("successful", successCount).
+		Int("skipped", skippedCount).
 		Int("failed", failureCount).
 		Msg("pg_backuper v2.0 completed")
 

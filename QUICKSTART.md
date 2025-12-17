@@ -148,7 +148,6 @@ docker run -d \
   -v ~/backup-config:/config:ro \
   -v ~/backups:/backups \
   -e CONFIG_FILE=/config/config.json \
-  -e CRON_SCHEDULE="0 3 * * *" \
   pg_backuper:v2.0
 
 # View logs
@@ -174,7 +173,6 @@ services:
       - ~/backups:/backups
     environment:
       - CONFIG_FILE=/config/config.json
-      - CRON_SCHEDULE=0 3 * * *  # 3 AM daily
     restart: unless-stopped
 ```
 
@@ -200,7 +198,6 @@ services:
       - /path/to/backups:/backups
     environment:
       - CONFIG_FILE=/config/config.json
-      - CRON_SCHEDULE=0 3 * * *
     restart: unless-stopped
 ```
 
@@ -213,7 +210,8 @@ Or in Portainer UI:
   - Container: `/backups` → Host: `/path/to/backups`
 - **Environment variables**:
   - `CONFIG_FILE=/config/config.json`
-  - `CRON_SCHEDULE=0 3 * * *`
+
+**Note:** Cron runs automatically every hour. Smart scheduling determines if backups are needed based on your retention tier configuration.
 
 ## 3. Verify Everything Works
 
@@ -309,12 +307,11 @@ docker run --rm --network host \
   pg_backuper:v2.0 \
   /usr/local/bin/pg_backuper /config/config.json
 
-# Production run (with cron)
+# Production run (with cron - runs hourly)
 docker run -d --name pg_backuper --network host \
   -v ~/backup-config:/config:ro \
   -v ~/backups:/backups \
   -e CONFIG_FILE=/config/config.json \
-  -e CRON_SCHEDULE="0 3 * * *" \
   pg_backuper:v2.0
 
 # View logs

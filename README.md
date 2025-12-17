@@ -15,10 +15,11 @@ Key changes:
 ## Features
 
 - 🔄 **Multi-tier retention**: Hourly, daily, weekly, monthly, quarterly, yearly backup policies
+- 🧠 **Smart scheduling**: Automatically determines if backup is due based on retention tiers
 - ⚡ **Parallel execution**: Backup multiple databases concurrently with configurable limits
 - 🔒 **Secure**: Passwords in `.pgpass` file (PostgreSQL standard), not in process list
 - 📊 **Structured logging**: JSON logs for easy parsing and monitoring
-- 🐳 **Docker-ready**: Designed for Docker/Portainer with cron scheduling
+- 🐳 **Docker-ready**: Designed for Docker/Portainer with automatic cron (runs hourly)
 - ⚙️ **Flexible configuration**: Global defaults with per-database overrides
 - 🔧 **Migration tool**: Automatic conversion from v1 to v2 config
 
@@ -72,7 +73,6 @@ services:
       - ./backups:/backups          # Backup storage
     environment:
       - CONFIG_FILE=/config/config.json
-      - CRON_SCHEDULE=0 3 * * *     # 3 AM daily
 ```
 
 **Portainer**:
@@ -81,7 +81,6 @@ services:
   - `/path/to/backups:/backups`
 - Environment variables:
   - `CONFIG_FILE=/config/config.json`
-  - `CRON_SCHEDULE=0 3 * * *`
 
 ### 3. Run
 
@@ -246,6 +245,31 @@ Backups are automatically categorized by age:
 - Keeps last 7 backups that are 1-7 days old
 - Other tiers: keeps all (no limit)
 
+## Smart Scheduling
+
+The tool intelligently determines when backups are needed based on your retention tier configuration.
+
+**How it works:**
+1. **Cron runs hourly**: Docker container has cron configured to run every hour
+2. **Tool checks if backup is due**: For each database, examines existing backups
+3. **Uses shortest tier**: Finds the shortest configured retention tier (e.g., if you have "hourly" and "daily", uses "hourly")
+4. **Compares timestamps**: If enough time has passed since last backup, creates new backup
+5. **Skips if not due**: If not enough time has passed, skips backup (logged as "skipped")
+
+**Example scenarios:**
+
+| Retention Tiers | Backup Frequency | Behavior |
+|----------------|------------------|----------|
+| `[{"tier": "hourly", "retention": 6}]` | Every hour | Backup created every hour |
+| `[{"tier": "daily", "retention": 7}]` | Once per day | Backup created once per day, skipped on other hourly runs |
+| `[{"tier": "hourly", ...}, {"tier": "daily", ...}]` | Every hour | Uses shortest tier (hourly) |
+
+**Benefits:**
+- **No cron misconfiguration**: You can't accidentally set cron to run daily when you want hourly backups
+- **Automatic frequency detection**: Backup frequency is inferred from your retention policy
+- **Safe defaults**: On errors, defaults to creating backup (fail-safe)
+- **Clear logging**: Skipped backups are logged with reason
+
 ## Logging
 
 ### JSON Format (Default)
@@ -382,8 +406,9 @@ docker run -v /path/to/new-config-dir:/config pg_backuper:v2.0
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CONFIG_FILE` | `/app/noop_config.json` | Path to config file |
-| `CRON_SCHEDULE` | `0 3 * * *` | Cron expression for backup schedule |
 | `POSTGRES_VERSION` | `16` | PostgreSQL client version (build arg) |
+
+**Note:** Cron schedule is fixed to run every hour (`0 * * * *`). The tool's smart scheduling determines if backups are actually needed based on retention tiers.
 
 ## File Formats
 

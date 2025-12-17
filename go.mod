@@ -2,8 +2,6 @@ module github.com/williamokano/pg_backuper
 
 go 1.24.0
 
-toolchain go1.24.6
-
 require (
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.19 // indirect

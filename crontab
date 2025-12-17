@@ -1,4 +1,4 @@
 SHELL=/bin/bash
 
-# Run pg_backuper based on CRON_SCHEDULE environment variable
-$CRON_SCHEDULE	root	/usr/local/bin/pg_backuper $CONFIG_FILE >> /var/log/pg_backuper.log 2>&1
+# Run pg_backuper every hour (smart scheduling in tool determines if backup is due)
+0 * * * *	root	/usr/local/bin/pg_backuper $CONFIG_FILE >> /var/log/pg_backuper.log 2>&1

@@ -15,6 +15,7 @@ import (
 type Result struct {
 	Database string
 	Success  bool
+	Skipped  bool // True if backup was skipped due to not being due
 	Error    error
 	Duration time.Duration
 }

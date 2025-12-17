@@ -1,4 +1,4 @@
-FROM golang:1.24-bullseye AS builder
+FROM golang:1.24-bookworm AS builder
 
 WORKDIR /app
 
@@ -10,7 +10,7 @@ COPY . .
 
 RUN go build -o pg_backuper .
 
-FROM debian:bullseye-slim
+FROM debian:trixie-slim
 
 ARG POSTGRES_VERSION=16
 
@@ -26,8 +26,8 @@ RUN apt-get update && apt-get install -y \
 # Install required packages and PostgreSQL APT repository
 RUN apt-get update && \
     apt-get install -y gnupg wget && \
-    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - && \
-    echo "deb http://apt.postgresql.org/pub/repos/apt/ bullseye-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+    wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/postgresql-keyring.gpg] http://apt.postgresql.org/pub/repos/apt/ trixie-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
     apt-get update && \
     apt-get install -y jq postgresql-client-${POSTGRES_VERSION} && \
     rm -rf /var/lib/apt/lists/*
@@ -44,9 +44,8 @@ COPY entrypoint.sh ./entrypoint.sh
 COPY crontab /etc/cron.d/pg_backuper-cron
 RUN chmod 0644 /etc/cron.d/pg_backuper-cron
 
-# Set environment variables for cron schedule and PostgreSQL version
-# Default schedule: every day at 3 AM
-ENV CRON_SCHEDULE="0 3 * * *"
+# Set environment variables
+# Cron runs hourly; smart scheduling in tool decides if backup is due
 ENV CONFIG_FILE="/app/noop_config.json"
 # Default PostgreSQL client version
 ENV POSTGRES_VERSION=${POSTGRES_VERSION}

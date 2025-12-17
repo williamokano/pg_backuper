@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# Replace placeholder with actual cron schedule
-sed -i "s|\$CRON_SCHEDULE|${CRON_SCHEDULE}|" /etc/cron.d/pg_backuper-cron
+# Replace placeholder with actual config file path
 sed -i "s|\$CONFIG_FILE|${CONFIG_FILE}|" /etc/cron.d/pg_backuper-cron
 
 # Start the cron daemon
