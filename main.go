@@ -1,99 +1,119 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"sort"
 	"time"
 
-	"github.com/williamokano/pg_backuper/pkg/backuper"
+	"github.com/williamokano/pg_backuper/pkg/config"
 	"github.com/williamokano/pg_backuper/pkg/logger"
+	"github.com/williamokano/pg_backuper/pkg/rotation"
 )
 
 func main() {
-	// Initialize logger with default settings for now
-	logger.Init("info", "json")
-	log := logger.Get()
-
 	configFile := "./noop_config.json"
 
 	if len(os.Args) > 1 {
 		configFile = os.Args[1]
 	}
 
-	log.Info().Str("config_file", configFile).Msg("starting pg_backuper")
-
-	backuper.Validate(configFile)
-	config, err := backuper.ParseConfig(configFile)
-	if err != nil {
-		log.Fatal().Err(err).Msg("failed to parse config file")
+	// Validate and parse config
+	if err := config.Validate(configFile); err != nil {
+		fmt.Fprintf(os.Stderr, "Configuration validation failed: %v\n", err)
+		os.Exit(1)
 	}
 
-	date := time.Now().Format("2006-01-02_15-04-05")
+	cfg, err := config.ParseConfig(configFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to parse config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize logger with config settings
+	logger.Init(cfg.GetLogLevel(), cfg.GetLogFormat())
+	log := logger.Get()
+
+	log.Info().Str("config_file", configFile).Msg("starting pg_backuper v2.0")
 
 	// Ensure backup directory exists
-	if err := os.MkdirAll(config.BackupDir, os.ModePerm); err != nil {
-		log.Fatal().Err(err).Str("backup_dir", config.BackupDir).Msg("failed to create backup directory")
+	if err := os.MkdirAll(cfg.BackupDir, os.ModePerm); err != nil {
+		log.Fatal().Err(err).Str("backup_dir", cfg.BackupDir).Msg("failed to create backup directory")
 	}
 
-	for _, db := range config.Databases {
+	timestamp := time.Now()
+
+	// Process each database
+	successCount := 0
+	failureCount := 0
+
+	for _, db := range cfg.Databases {
+		if !db.IsEnabled() {
+			log.Info().Str("database", db.Name).Msg("skipping disabled database")
+			continue
+		}
+
 		dbLog := log.With().Str("database", db.Name).Logger()
 
-		backupFile := filepath.Join(config.BackupDir, db.Name+"_"+date+".backup")
-		dbLog.Info().Str("backup_file", backupFile).Msg("starting backup")
+		// Perform backup
+		backupFile := rotation.GenerateBackupFilename(cfg.BackupDir, db.Name, timestamp)
+		port := db.GetPort(cfg.GlobalDefaults)
 
-		cmd := exec.Command("pg_dump", "-U", db.User, "-h", db.Host, "-F", "c", "-b", "-v", "-f", backupFile, db.Name)
-		cmd.Env = append(os.Environ(), "PGPASSWORD="+db.Password)
+		dbLog.Info().
+			Str("backup_file", backupFile).
+			Str("host", db.Host).
+			Int("port", port).
+			Msg("starting backup")
+
+		cmd := exec.Command("pg_dump",
+			"-U", db.User,
+			"-h", db.Host,
+			"-p", fmt.Sprintf("%d", port),
+			"-F", "c", // custom format
+			"-b",      // include blobs
+			"-v",      // verbose
+			"-f", backupFile,
+			db.Name,
+		)
+
+		// TODO: This will be replaced with .pgpass in Phase 5
+		// For now, keep using PGPASSWORD for backward compatibility during transition
+		cmd.Env = append(os.Environ(), "PGPASSWORD=")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
 		if err := cmd.Run(); err != nil {
 			dbLog.Error().Err(err).Msg("backup failed")
+			failureCount++
 			continue
 		}
 
 		dbLog.Info().Msg("backup completed")
 
-		// Rotate backups
-		pattern := filepath.Join(config.BackupDir, db.Name+"_*.backup")
-		files, err := filepath.Glob(pattern)
-		if err != nil {
-			dbLog.Error().Err(err).Msg("failed to list backup files")
-			continue
-		}
-
-		// Parse and filter valid backup files
-		type backupInfo struct {
-			path string
-			date time.Time
-		}
-		var validBackups []backupInfo
-		for _, file := range files {
-			date, err := backuper.ExtractDateFromFilename(file)
-			if err != nil {
-				dbLog.Warn().Err(err).Str("file", file).Msg("skipping file with invalid date format")
-				continue
-			}
-			validBackups = append(validBackups, backupInfo{path: file, date: date})
-		}
-
-		// Sort files by date (oldest first)
-		sort.Slice(validBackups, func(i, j int) bool {
-			return validBackups[i].date.Before(validBackups[j].date)
-		})
-
-		// Delete old files beyond retention limit
-		if len(validBackups) > config.Retention {
-			filesToDelete := validBackups[:len(validBackups)-config.Retention]
-			for _, bf := range filesToDelete {
-				if err := os.Remove(bf.path); err != nil {
-					dbLog.Error().Err(err).Str("file", bf.path).Msg("failed to delete old backup")
-				} else {
-					dbLog.Info().Str("file", bf.path).Msg("deleted old backup")
-				}
-			}
+		// Perform rotation with multi-tier retention
+		retentionTiers := db.GetRetentionTiers(cfg.GlobalDefaults)
+		if len(retentionTiers) == 0 {
+			dbLog.Warn().Msg("no retention tiers configured, skipping rotation")
 		} else {
-			dbLog.Info().Int("count", len(validBackups)).Int("retention", config.Retention).Msg("within retention limit, no files to delete")
+			dbLog.Info().
+				Int("tier_count", len(retentionTiers)).
+				Msg("applying retention policy")
+
+			if err := rotation.RotateBackups(cfg.BackupDir, db.Name, retentionTiers, dbLog); err != nil {
+				dbLog.Error().Err(err).Msg("rotation failed")
+				// Don't count as failure - backup succeeded
+			}
 		}
+
+		successCount++
 	}
 
-	log.Info().Msg("pg_backuper completed successfully")
+	log.Info().
+		Int("successful", successCount).
+		Int("failed", failureCount).
+		Msg("pg_backuper v2.0 completed")
+
+	if failureCount > 0 {
+		os.Exit(1)
+	}
 }
