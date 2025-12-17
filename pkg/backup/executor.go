@@ -39,6 +39,27 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 		Int("port", port).
 		Msg("starting backup")
 
+	// Get .pgpass file path
+	pgpassPath, pgpassErr := GetPgpassPath(cfg.GetPgpassFile())
+	if pgpassErr != nil {
+		// Log warning but continue - pg_dump might work with trust auth or other methods
+		dbLog.Warn().
+			Err(pgpassErr).
+			Msg(".pgpass file not found, pg_dump will use alternative authentication")
+	} else {
+		// Validate permissions
+		if err := ValidatePgpassPermissions(pgpassPath); err != nil {
+			dbLog.Warn().
+				Err(err).
+				Str("pgpass_path", pgpassPath).
+				Msg(".pgpass file has incorrect permissions")
+		} else {
+			dbLog.Debug().
+				Str("pgpass_path", pgpassPath).
+				Msg("using .pgpass for authentication")
+		}
+	}
+
 	// Build pg_dump command
 	cmd := exec.Command("pg_dump",
 		"-U", db.User,
@@ -51,9 +72,12 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 		db.Name,
 	)
 
-	// TODO: Will be replaced with PGPASSFILE in Phase 5
-	// For now, use empty password (requires .pgpass or trust auth)
-	cmd.Env = append(os.Environ(), "PGPASSWORD=")
+	// Set PGPASSFILE environment variable if .pgpass was found
+	if pgpassPath != "" {
+		cmd.Env = append(os.Environ(), "PGPASSFILE="+pgpassPath)
+	} else {
+		cmd.Env = os.Environ()
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
