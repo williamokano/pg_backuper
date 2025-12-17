@@ -1,4 +1,6 @@
 SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Run pg_backuper every hour (smart scheduling in tool determines if backup is due)
-0 * * * *	root	/usr/local/bin/pg_backuper $CONFIG_FILE >> /var/log/pg_backuper.log 2>&1
+# Output goes to symlinked stdout/stderr for Docker logs
+0 * * * *	root	echo "=== Cron job triggered at $(date) ===" && /usr/local/bin/pg_backuper $CONFIG_FILE >> /var/log/pg_backuper.log 2>&1

@@ -1,14 +1,17 @@
 #!/bin/bash
+set -e
+
+echo "=== pg_backuper container starting ==="
+echo "Config file: ${CONFIG_FILE}"
 
 # Replace placeholder with actual config file path
 sed -i "s|\$CONFIG_FILE|${CONFIG_FILE}|" /etc/cron.d/pg_backuper-cron
 
-# Start the cron daemon
-cron
+# Create log directory and symlink to stdout/stderr for Docker logging
+mkdir -p /var/log
+ln -sf /proc/1/fd/1 /var/log/pg_backuper.log
+ln -sf /proc/1/fd/2 /var/log/pg_backuper.err
 
-if [[ ! -f /var/log/pg_backuper.log ]]; then
-  touch /var/log/pg_backuper.log
-fi
-
-# Keep the container running to allow cron to execute jobs
-tail -f /var/log/pg_backuper.log
+echo "=== Starting cron daemon ==="
+# Start cron in foreground mode with logging to stderr (which goes to Docker logs)
+cron -f -L 2
