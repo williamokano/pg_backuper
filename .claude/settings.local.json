@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(go get:*)",
+      "Bash(go test:*)"
+    ]
+  }
+}
