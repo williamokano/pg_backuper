@@ -105,13 +105,41 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 		} else {
 			cmd.Env = os.Environ()
 		}
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+
+		// Create logs directory for pg_dump output
+		logsDir := fmt.Sprintf("%s/logs", cfg.BackupDir)
+		var logFile *os.File
+		if err := os.MkdirAll(logsDir, 0755); err != nil {
+			tierLog.Warn().Err(err).Msg("failed to create logs directory, pg_dump output will go to stdout")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+		} else {
+			// Create log file for this backup operation
+			logFileName := fmt.Sprintf("%s/%s--%s--%s.log", logsDir, db.Name, tier, timestamp.Format("2006-01-02T15-04-05"))
+			var err error
+			logFile, err = os.Create(logFileName)
+			if err != nil {
+				tierLog.Warn().Err(err).Msg("failed to create log file, pg_dump output will go to stdout")
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+			} else {
+				cmd.Stdout = logFile
+				cmd.Stderr = logFile
+				tierLog.Debug().Str("log_file", logFileName).Msg("pg_dump output redirected to log file")
+			}
+		}
 
 		// Execute backup for this tier
-		if err := cmd.Run(); err != nil {
+		cmdErr := cmd.Run()
+
+		// Close log file if it was opened
+		if logFile != nil {
+			logFile.Close()
+		}
+
+		if cmdErr != nil {
 			tierLog.Error().
-				Err(err).
+				Err(cmdErr).
 				Msg("backup failed for tier")
 			result.TiersFailed = append(result.TiersFailed, tier)
 
