@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/williamokano/pg_backuper/pkg/config"
 	"github.com/williamokano/pg_backuper/pkg/rotation"
+	"github.com/williamokano/pg_backuper/pkg/storage"
 )
 
 // TierInterval maps tier names to their durations
@@ -34,6 +36,8 @@ type TierSchedule struct {
 // GetDueTiers checks which tiers are due for backup for a database.
 // Returns a TierSchedule with the list of due tiers and next backup times.
 func GetDueTiers(cfg *config.Config, db config.DatabaseConfig, now time.Time, logger zerolog.Logger) (TierSchedule, error) {
+	ctx := context.Background()
+
 	// Get retention tiers for this database (with fallback to global)
 	retentionTiers := db.GetRetentionTiers(cfg.GlobalDefaults)
 
@@ -49,6 +53,25 @@ func GetDueTiers(cfg *config.Config, db config.DatabaseConfig, now time.Time, lo
 		return schedule, nil
 	}
 
+	// Check if storage backends are configured
+	if len(cfg.Storage.Destinations) == 0 {
+		// No storage configuration, use file-based approach for backward compatibility
+		logger.Debug().Msg("no storage backends configured, using file-based check")
+		return getDueTiersFileBased(cfg, db, now, logger, retentionTiers)
+	}
+
+	// Initialize a backend for checking due tiers (use first configured backend)
+	backends, err := initializeBackends(ctx, cfg, db, logger)
+	if err != nil {
+		// Fallback to old file-based approach if backend initialization fails
+		logger.Warn().Err(err).Msg("failed to initialize backends for scheduler, using file-based check")
+		return getDueTiersFileBased(cfg, db, now, logger, retentionTiers)
+	}
+	defer closeBackends(backends)
+
+	// Use the first backend to check for due tiers
+	backend := backends[0]
+
 	// Check each configured tier independently
 	for _, retentionTier := range retentionTiers {
 		tierName := retentionTier.Tier
@@ -61,13 +84,14 @@ func GetDueTiers(cfg *config.Config, db config.DatabaseConfig, now time.Time, lo
 			continue
 		}
 
-		// Find last backup for this specific tier
-		lastBackupTime, err := findLastBackupTimeByTier(cfg.BackupDir, db.Name, tierName)
+		// Find last backup for this specific tier using backend
+		lastBackupTime, err := findLastBackupTimeByTierWithBackend(ctx, backend, db.Name, tierName)
 		if err != nil {
 			logger.Warn().
 				Err(err).
 				Str("database", db.Name).
 				Str("tier", tierName).
+				Str("backend", backend.Name()).
 				Msg("error finding last backup for tier, assuming due")
 			schedule.Due = append(schedule.Due, tierName)
 			schedule.Next[tierName] = now
@@ -306,4 +330,91 @@ func isBackupForDatabase(filename, dbName string) bool {
 	}
 
 	return false
+}
+
+// findLastBackupTimeByTierWithBackend finds the most recent backup timestamp for a specific tier using a storage backend
+func findLastBackupTimeByTierWithBackend(ctx context.Context, backend storage.Backend, dbName, tierName string) (time.Time, error) {
+	pattern := fmt.Sprintf("%s--%s--*.backup", dbName, tierName)
+
+	files, err := backend.List(ctx, pattern)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("failed to list files for tier %s: %w", tierName, err)
+	}
+
+	if len(files) == 0 {
+		return time.Time{}, nil
+	}
+
+	// Files are sorted by modtime (newest first) from backend.List()
+	// Parse timestamp from newest file
+	newestFile := files[0]
+	components, err := rotation.ParseBackupFilename(newestFile.Path)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return components.Timestamp, nil
+}
+
+// getDueTiersFileBased is the old file-based approach for backward compatibility
+func getDueTiersFileBased(cfg *config.Config, db config.DatabaseConfig, now time.Time, logger zerolog.Logger, retentionTiers []config.RetentionTier) (TierSchedule, error) {
+	schedule := TierSchedule{
+		Due:  []string{},
+		Next: make(map[string]time.Time),
+	}
+
+	// Check each configured tier independently using the old file-based approach
+	for _, retentionTier := range retentionTiers {
+		tierName := retentionTier.Tier
+		interval, ok := TierInterval[tierName]
+		if !ok {
+			logger.Warn().
+				Str("database", db.Name).
+				Str("tier", tierName).
+				Msg("unknown tier name, skipping")
+			continue
+		}
+
+		// Find last backup for this specific tier using old approach
+		lastBackupTime, err := findLastBackupTimeByTier(cfg.BackupDir, db.Name, tierName)
+		if err != nil {
+			logger.Warn().
+				Err(err).
+				Str("database", db.Name).
+				Str("tier", tierName).
+				Msg("error finding last backup for tier, assuming due")
+			schedule.Due = append(schedule.Due, tierName)
+			schedule.Next[tierName] = now
+			continue
+		}
+
+		// Handle yearly tier
+		if tierName == "yearly" && !lastBackupTime.IsZero() {
+			oldestBackup, err := findOldestBackup(cfg.BackupDir, db.Name)
+			if err == nil && !oldestBackup.IsZero() {
+				ageOfOldest := now.Sub(oldestBackup)
+				if ageOfOldest >= interval {
+					nextYearly := oldestBackup.Add(interval)
+					schedule.Next[tierName] = nextYearly
+					continue
+				}
+			}
+		}
+
+		if lastBackupTime.IsZero() {
+			schedule.Due = append(schedule.Due, tierName)
+			schedule.Next[tierName] = now
+			continue
+		}
+
+		// Calculate next backup time
+		nextBackup := lastBackupTime.Add(interval)
+		schedule.Next[tierName] = nextBackup
+
+		if now.After(nextBackup) || now.Equal(nextBackup) {
+			schedule.Due = append(schedule.Due, tierName)
+		}
+	}
+
+	return schedule, nil
 }

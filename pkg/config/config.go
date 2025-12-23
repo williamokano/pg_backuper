@@ -6,30 +6,48 @@ type RetentionTier struct {
 	Retention int    `json:"retention"` // number of backups to keep (0 = unlimited)
 }
 
+// StorageDestination represents a storage backend configuration
+type StorageDestination struct {
+	Name    string                 `json:"name"`     // User-friendly name
+	Type    string                 `json:"type"`     // local, s3, backblaze, ssh
+	Enabled bool                   `json:"enabled"`  // Whether this backend is active
+	BaseDir string                 `json:"base_dir"` // Base path/prefix
+	Options map[string]interface{} `json:"options"`  // Backend-specific config
+}
+
+// StorageConfig defines storage backend configuration
+type StorageConfig struct {
+	TempDir      string               `json:"temp_dir"`     // Temp directory for pg_dump
+	Destinations []StorageDestination `json:"destinations"` // All configured backends
+}
+
 // GlobalDefaults defines default values applied to all databases
 type GlobalDefaults struct {
-	Port           int              `json:"port,omitempty"`            // default PostgreSQL port
-	RetentionTiers []RetentionTier  `json:"retention_tiers,omitempty"` // default retention policy
-	PgpassFile     string           `json:"pgpass_file,omitempty"`     // path to .pgpass file
+	Port                int              `json:"port,omitempty"`                     // default PostgreSQL port
+	RetentionTiers      []RetentionTier  `json:"retention_tiers,omitempty"`          // default retention policy
+	PgpassFile          string           `json:"pgpass_file,omitempty"`              // path to .pgpass file
+	StorageDestinations []string         `json:"storage_destinations,omitempty"`     // default storage backends
 }
 
 // DatabaseConfig defines configuration for a single database
 type DatabaseConfig struct {
-	Name           string          `json:"name"`
-	User           string          `json:"user"`
-	Host           string          `json:"host"`
-	Port           int             `json:"port,omitempty"`            // optional, overrides global default
-	RetentionTiers []RetentionTier `json:"retention_tiers,omitempty"` // optional, overrides global default
-	Enabled        bool            `json:"enabled,omitempty"`         // defaults to true if omitted
+	Name                string          `json:"name"`
+	User                string          `json:"user"`
+	Host                string          `json:"host"`
+	Port                int             `json:"port,omitempty"`                     // optional, overrides global default
+	RetentionTiers      []RetentionTier `json:"retention_tiers,omitempty"`          // optional, overrides global default
+	Enabled             bool            `json:"enabled,omitempty"`                  // defaults to true if omitted
+	StorageDestinations []string        `json:"storage_destinations,omitempty"`     // override storage backends
 }
 
 // Config is the root configuration structure
 type Config struct {
-	BackupDir            string          `json:"backup_dir"`
-	GlobalDefaults       GlobalDefaults  `json:"global_defaults,omitempty"`
-	MaxConcurrentBackups int             `json:"max_concurrent_backups,omitempty"` // default: 3
-	LogLevel             string          `json:"log_level,omitempty"`              // debug, info, warn, error (default: info)
-	LogFormat            string          `json:"log_format,omitempty"`             // json, console (default: json)
+	BackupDir            string           `json:"backup_dir,omitempty"`             // DEPRECATED: Use storage.destinations instead
+	Storage              StorageConfig    `json:"storage"`
+	GlobalDefaults       GlobalDefaults   `json:"global_defaults,omitempty"`
+	MaxConcurrentBackups int              `json:"max_concurrent_backups,omitempty"` // default: 3
+	LogLevel             string           `json:"log_level,omitempty"`              // debug, info, warn, error (default: info)
+	LogFormat            string           `json:"log_format,omitempty"`             // json, console (default: json)
 	Databases            []DatabaseConfig `json:"databases"`
 }
 
@@ -91,4 +109,27 @@ func (c *Config) GetLogFormat() string {
 		return c.LogFormat
 	}
 	return "json"
+}
+
+// GetStorageDestinations returns the effective storage destinations for a database
+func (db *DatabaseConfig) GetStorageDestinations(cfg *Config) []string {
+	// Database-specific destinations take precedence
+	if len(db.StorageDestinations) > 0 {
+		return db.StorageDestinations
+	}
+
+	// Fall back to global defaults
+	if len(cfg.GlobalDefaults.StorageDestinations) > 0 {
+		return cfg.GlobalDefaults.StorageDestinations
+	}
+
+	// Last resort: all enabled backends
+	var destinations []string
+	for _, dest := range cfg.Storage.Destinations {
+		if dest.Enabled {
+			destinations = append(destinations, dest.Name)
+		}
+	}
+
+	return destinations
 }

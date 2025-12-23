@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -182,16 +183,9 @@ func TestIsBackupDue(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Create a backup file from 2 hours ago
-	twoHoursAgo := time.Now().Add(-2 * time.Hour)
-	filename := twoHoursAgo.Format("mydb--2006-01-02T15-04-05.backup")
-	filePath := filepath.Join(tmpDir, filename)
-	if err := os.WriteFile(filePath, []byte("test"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-
 	logger := zerolog.Nop()
 	now := time.Now()
+	twoHoursAgo := now.Add(-2 * time.Hour)
 
 	tests := []struct {
 		name    string
@@ -229,6 +223,15 @@ func TestIsBackupDue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Create tier-specific backup files for each tier in the test
+			for _, tier := range tt.tiers {
+				filename := twoHoursAgo.Format(fmt.Sprintf("mydb--%s--2006-01-02T15-04-05.backup", tier.Tier))
+				filePath := filepath.Join(tmpDir, filename)
+				if err := os.WriteFile(filePath, []byte("test backup data"), 0644); err != nil {
+					t.Fatalf("Failed to create test file: %v", err)
+				}
+			}
+
 			cfg := &config.Config{
 				BackupDir: tmpDir,
 				GlobalDefaults: config.GlobalDefaults{
@@ -249,6 +252,13 @@ func TestIsBackupDue(t *testing.T) {
 
 			if isDue != tt.wantDue {
 				t.Errorf("IsBackupDue() = %v, want %v", isDue, tt.wantDue)
+			}
+
+			// Clean up test files for next iteration
+			for _, tier := range tt.tiers {
+				filename := twoHoursAgo.Format(fmt.Sprintf("mydb--%s--2006-01-02T15-04-05.backup", tier.Tier))
+				filePath := filepath.Join(tmpDir, filename)
+				os.Remove(filePath)
 			}
 		})
 	}

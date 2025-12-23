@@ -1,11 +1,13 @@
 package rotation
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 
 	"github.com/rs/zerolog"
 	"github.com/williamokano/pg_backuper/pkg/config"
+	"github.com/williamokano/pg_backuper/pkg/storage"
 )
 
 // RotateBackups performs backup rotation for a single database
@@ -76,6 +78,65 @@ func RotateBackups(backupDir string, dbName string, retentionTiers []config.Rete
 
 	if err := DeleteFiles(filesToDelete, dbLogger); err != nil {
 		return fmt.Errorf("failed to delete files: %w", err)
+	}
+
+	return nil
+}
+
+// ApplyRetentionWithBackend applies retention policy using storage backend
+func ApplyRetentionWithBackend(ctx context.Context, backend storage.Backend, dbName string, retentionTiers []config.RetentionTier, logger zerolog.Logger) error {
+	backendLog := logger.With().
+		Str("backend", backend.Name()).
+		Str("backend_type", backend.Type()).
+		Str("database", dbName).
+		Logger()
+
+	backendLog.Debug().Msg("starting retention check")
+
+	// For each tier, apply retention
+	for _, tier := range retentionTiers {
+		pattern := fmt.Sprintf("%s--%s--*.backup", dbName, tier.Tier)
+
+		// List files for this tier using backend
+		files, err := backend.List(ctx, pattern)
+		if err != nil {
+			return fmt.Errorf("failed to list files for tier %s: %w", tier.Tier, err)
+		}
+
+		tierLog := backendLog.With().Str("tier", tier.Tier).Logger()
+		tierLog.Debug().Int("count", len(files)).Msg("found backups for tier")
+
+		// Files are already sorted by modtime (newest first) from backend.List()
+		if len(files) <= tier.Retention {
+			tierLog.Debug().
+				Int("found", len(files)).
+				Int("retention", tier.Retention).
+				Msg("retention not exceeded, no files to delete")
+			continue
+		}
+
+		// Delete old files (beyond retention count)
+		filesToDelete := files[tier.Retention:]
+
+		tierLog.Info().
+			Int("total", len(files)).
+			Int("retention", tier.Retention).
+			Int("to_delete", len(filesToDelete)).
+			Msg("applying retention policy")
+
+		for _, file := range filesToDelete {
+			if err := backend.Delete(ctx, file.Path); err != nil {
+				tierLog.Error().
+					Err(err).
+					Str("file", file.Path).
+					Msg("failed to delete old backup")
+			} else {
+				tierLog.Info().
+					Str("file", file.Path).
+					Int64("size", file.Size).
+					Msg("deleted old backup")
+			}
+		}
 	}
 
 	return nil

@@ -1,23 +1,33 @@
 package backup
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/williamokano/pg_backuper/pkg/config"
 	"github.com/williamokano/pg_backuper/pkg/rotation"
+	"github.com/williamokano/pg_backuper/pkg/storage"
+
+	// Import backends to register them
+	_ "github.com/williamokano/pg_backuper/pkg/storage/backblaze"
+	_ "github.com/williamokano/pg_backuper/pkg/storage/local"
+	_ "github.com/williamokano/pg_backuper/pkg/storage/s3"
+	_ "github.com/williamokano/pg_backuper/pkg/storage/ssh"
 )
 
 // Result represents the outcome of a backup operation
 type Result struct {
 	Database       string
 	Success        bool
-	Skipped        bool     // True if backup was skipped due to not being due
-	TiersCompleted []string // List of tiers that were successfully backed up
-	TiersFailed    []string // List of tiers that failed to backup
+	Skipped        bool                          // True if backup was skipped due to not being due
+	TiersCompleted []string                      // List of tiers that were successfully backed up
+	TiersFailed    []string                      // List of tiers that failed to backup
+	BackendResults map[string][]storage.Result   // Tier -> Backend results
 	Error          error
 	Duration       time.Duration
 }
@@ -25,11 +35,14 @@ type Result struct {
 // BackupDatabase performs backups for specified tiers of a single database
 func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time.Time, dueTiers []string, logger zerolog.Logger) Result {
 	start := time.Now()
+	ctx := context.Background()
+
 	result := Result{
 		Database:       db.Name,
 		Success:        false,
 		TiersCompleted: []string{},
 		TiersFailed:    []string{},
+		BackendResults: make(map[string][]storage.Result),
 	}
 
 	dbLog := logger.With().Str("database", db.Name).Logger()
@@ -77,17 +90,57 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 		Str("pgpass_path", pgpassPath).
 		Msg("using .pgpass for authentication")
 
+	// Initialize storage backends
+	backends, err := initializeBackends(ctx, cfg, db, dbLog)
+	if err != nil {
+		result.Error = fmt.Errorf("failed to initialize storage backends: %w", err)
+		result.Duration = time.Since(start)
+		dbLog.Error().Err(err).Msg("FATAL: cannot initialize storage backends")
+		return result
+	}
+	defer closeBackends(backends)
+
+	dbLog.Info().
+		Int("backend_count", len(backends)).
+		Msg("initialized storage backends")
+
+	// Create temp directory for pg_dump
+	tempDir := cfg.Storage.TempDir
+	if tempDir == "" {
+		// Backward compatibility: if BackupDir is set, use it with .tmp subdirectory
+		if cfg.BackupDir != "" {
+			tempDir = filepath.Join(cfg.BackupDir, ".tmp")
+		} else {
+			tempDir = filepath.Join(os.TempDir(), "pg_backuper")
+		}
+	}
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		result.Error = fmt.Errorf("failed to create temp directory: %w", err)
+		result.Duration = time.Since(start)
+		dbLog.Error().Err(err).Str("temp_dir", tempDir).Msg("FATAL: cannot create temp directory")
+		return result
+	}
+
+	// Initialize multi-uploader
+	uploader := storage.NewMultiUploader(logger)
+
 	// Create one backup per due tier
 	for _, tier := range dueTiers {
-		// Generate tier-specific backup filename
-		backupFile := rotation.GenerateBackupFilenameWithTier(cfg.BackupDir, db.Name, tier, timestamp)
+		// Generate temp filename
+		tempFile := filepath.Join(tempDir, fmt.Sprintf("%s--%s--%s.backup.tmp",
+			db.Name, tier, timestamp.Format("2006-01-02T15-04-05")))
+
+		// Generate final filename (without .tmp extension, without base directory)
+		finalFilename := rotation.GenerateBackupFilenameWithTier("", db.Name, tier, timestamp)
+		finalFilename = filepath.Base(finalFilename)
 
 		tierLog := dbLog.With().Str("tier", tier).Logger()
 		tierLog.Info().
-			Str("backup_file", backupFile).
+			Str("temp_file", tempFile).
+			Str("final_filename", finalFilename).
 			Msg("creating tier-specific backup")
 
-		// Build pg_dump command
+		// Build pg_dump command (writes to temp file)
 		cmd := exec.Command("pg_dump",
 			"-U", db.User,
 			"-h", db.Host,
@@ -95,7 +148,7 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 			"-F", "c", // custom format (compressed)
 			"-b",      // include blobs
 			"-v",      // verbose
-			"-f", backupFile,
+			"-f", tempFile,
 			db.Name,
 		)
 
@@ -107,7 +160,7 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 		}
 
 		// Create logs directory for pg_dump output
-		logsDir := fmt.Sprintf("%s/logs", cfg.BackupDir)
+		logsDir := filepath.Join(tempDir, "logs")
 		var logFile *os.File
 		if err := os.MkdirAll(logsDir, 0755); err != nil {
 			tierLog.Warn().Err(err).Msg("failed to create logs directory, pg_dump output will go to stdout")
@@ -115,7 +168,7 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 			cmd.Stderr = os.Stderr
 		} else {
 			// Create log file for this backup operation
-			logFileName := fmt.Sprintf("%s/%s--%s--%s.log", logsDir, db.Name, tier, timestamp.Format("2006-01-02T15-04-05"))
+			logFileName := filepath.Join(logsDir, fmt.Sprintf("%s--%s--%s.log", db.Name, tier, timestamp.Format("2006-01-02T15-04-05")))
 			var err error
 			logFile, err = os.Create(logFileName)
 			if err != nil {
@@ -143,28 +196,19 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 				Msg("backup failed for tier")
 			result.TiersFailed = append(result.TiersFailed, tier)
 
-			// Clean up failed backup file (may be 0 bytes)
-			if removeErr := os.Remove(backupFile); removeErr != nil {
-				tierLog.Warn().
-					Err(removeErr).
-					Str("file", backupFile).
-					Msg("failed to remove incomplete backup file")
-			} else {
-				tierLog.Info().
-					Str("file", backupFile).
-					Msg("removed incomplete backup file")
-			}
+			// Clean up failed temp backup file
+			os.Remove(tempFile)
 
 			// Continue with other tiers even if this one fails
 			continue
 		}
 
 		// Verify backup file was actually created and has content
-		fileInfo, err := os.Stat(backupFile)
+		fileInfo, err := os.Stat(tempFile)
 		if err != nil {
 			tierLog.Error().
 				Err(err).
-				Str("file", backupFile).
+				Str("file", tempFile).
 				Msg("backup file not found after pg_dump")
 			result.TiersFailed = append(result.TiersFailed, tier)
 			continue
@@ -172,18 +216,41 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 
 		if fileInfo.Size() == 0 {
 			tierLog.Error().
-				Str("file", backupFile).
+				Str("file", tempFile).
 				Msg("backup file is empty (0 bytes)")
 			result.TiersFailed = append(result.TiersFailed, tier)
 			// Remove the empty file
-			os.Remove(backupFile)
+			os.Remove(tempFile)
 			continue
 		}
 
 		tierLog.Info().
 			Int64("size_bytes", fileInfo.Size()).
-			Msg("backup completed for tier")
-		result.TiersCompleted = append(result.TiersCompleted, tier)
+			Msg("backup created successfully, uploading to destinations")
+
+		// Upload to all configured backends in parallel
+		uploadResults := uploader.Upload(ctx, backends, tempFile, finalFilename)
+		result.BackendResults[tier] = uploadResults
+
+		// Check if at least one backend succeeded
+		hasSuccess := false
+		for _, ur := range uploadResults {
+			if ur.Success {
+				hasSuccess = true
+				break
+			}
+		}
+
+		if !hasSuccess {
+			tierLog.Error().Msg("all backends failed to upload backup")
+			result.TiersFailed = append(result.TiersFailed, tier)
+			// Keep temp file for retry
+		} else {
+			tierLog.Info().Msg("backup uploaded to at least one destination")
+			result.TiersCompleted = append(result.TiersCompleted, tier)
+			// Delete temp file after successful upload
+			os.Remove(tempFile)
+		}
 	}
 
 	result.Duration = time.Since(start)
@@ -204,7 +271,7 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 			Msg("all tier backups completed successfully")
 	}
 
-	// Perform rotation only if at least one backup succeeded
+	// Perform rotation on each backend only if at least one backup succeeded
 	// CRITICAL: Never delete old backups if all new backups failed
 	if len(result.TiersCompleted) > 0 {
 		retentionTiers := db.GetRetentionTiers(cfg.GlobalDefaults)
@@ -214,11 +281,18 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 			dbLog.Info().
 				Int("tier_count", len(retentionTiers)).
 				Strs("completed_tiers", result.TiersCompleted).
-				Msg("applying retention policy")
+				Int("backend_count", len(backends)).
+				Msg("applying retention policy per backend")
 
-			if err := rotation.RotateBackups(cfg.BackupDir, db.Name, retentionTiers, dbLog); err != nil {
-				dbLog.Error().Err(err).Msg("rotation failed")
-				// Don't fail the backup operation if rotation fails
+			// Apply retention policy on each backend independently
+			for _, backend := range backends {
+				if err := rotation.ApplyRetentionWithBackend(ctx, backend, db.Name, retentionTiers, dbLog); err != nil {
+					dbLog.Error().
+						Err(err).
+						Str("backend", backend.Name()).
+						Msg("rotation failed for backend")
+					// Don't fail the backup operation if rotation fails on one backend
+				}
 			}
 		}
 	} else {
@@ -226,4 +300,78 @@ func BackupDatabase(cfg *config.Config, db config.DatabaseConfig, timestamp time
 	}
 
 	return result
+}
+
+// initializeBackends creates backend instances from config
+func initializeBackends(ctx context.Context, cfg *config.Config, db config.DatabaseConfig, logger zerolog.Logger) ([]storage.Backend, error) {
+	// Backward compatibility: if no storage config but BackupDir is set, create default local backend
+	if len(cfg.Storage.Destinations) == 0 && cfg.BackupDir != "" {
+		logger.Debug().Str("backup_dir", cfg.BackupDir).Msg("no storage config, creating default local backend")
+		storageConfig := storage.Config{
+			Name:    "default_local",
+			Type:    "local",
+			Enabled: true,
+			BaseDir: cfg.BackupDir,
+			Options: map[string]interface{}{
+				"path": cfg.BackupDir,
+			},
+		}
+
+		factory := storage.NewFactory()
+		backend, err := factory.Create(ctx, storageConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create default local backend: %w", err)
+		}
+
+		return []storage.Backend{backend}, nil
+	}
+
+	// Get destination names for this database
+	destNames := db.GetStorageDestinations(cfg)
+
+	if len(destNames) == 0 {
+		return nil, fmt.Errorf("no storage destinations configured for database %s", db.Name)
+	}
+
+	// Build storage configs for requested destinations
+	var storageConfigs []storage.Config
+	for _, destName := range destNames {
+		for _, dest := range cfg.Storage.Destinations {
+			if dest.Name == destName && dest.Enabled {
+				storageConfigs = append(storageConfigs, storage.Config{
+					Name:    dest.Name,
+					Type:    dest.Type,
+					Enabled: dest.Enabled,
+					BaseDir: dest.BaseDir,
+					Options: dest.Options,
+				})
+				break
+			}
+		}
+	}
+
+	if len(storageConfigs) == 0 {
+		return nil, fmt.Errorf("no enabled storage destinations found")
+	}
+
+	// Create backends using factory
+	factory := storage.NewFactory()
+	backends, err := factory.CreateAll(ctx, storageConfigs)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Info().
+		Int("count", len(backends)).
+		Strs("destinations", destNames).
+		Msg("initialized storage backends")
+
+	return backends, nil
+}
+
+// closeBackends safely closes all backends
+func closeBackends(backends []storage.Backend) {
+	for _, backend := range backends {
+		backend.Close()
+	}
 }
