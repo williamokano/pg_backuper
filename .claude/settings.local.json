@@ -4,7 +4,8 @@
       "Bash(cat:*)",
       "Bash(go get:*)",
       "Bash(go test:*)",
-      "Bash(go build:*)"
+      "Bash(go build:*)",
+      "Bash(find:*)"
     ]
   }
 }
