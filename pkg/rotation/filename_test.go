@@ -3,6 +3,9 @@ package rotation
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExtractDateFromFilename(t *testing.T) {
@@ -90,12 +93,11 @@ func TestExtractDateFromFilename(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := ExtractDateFromFilename(tt.filename)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ExtractDateFromFilename() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if !tt.wantErr && !got.Equal(tt.want) {
-				t.Errorf("ExtractDateFromFilename() = %v, want %v", got, tt.want)
+			if tt.wantErr {
+				assert.Error(t, err, "Expected an error but got none")
+			} else {
+				require.NoError(t, err)
+				assert.True(t, got.Equal(tt.want), "ExtractDateFromFilename() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -133,18 +135,12 @@ func TestGenerateBackupFilename(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := GenerateBackupFilename(tt.backupDir, tt.dbName, timestamp)
-			if got != tt.want {
-				t.Errorf("GenerateBackupFilename() = %v, want %v", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "GenerateBackupFilename() mismatch")
 
 			// Verify the generated filename can be parsed back
 			parsedTime, err := ExtractDateFromFilename(got)
-			if err != nil {
-				t.Errorf("Generated filename cannot be parsed: %v", err)
-			}
-			if !parsedTime.Equal(timestamp) {
-				t.Errorf("Parsed time %v doesn't match original %v", parsedTime, timestamp)
-			}
+			require.NoError(t, err, "Generated filename cannot be parsed")
+			assert.True(t, parsedTime.Equal(timestamp), "Parsed time %v doesn't match original %v", parsedTime, timestamp)
 		})
 	}
 }

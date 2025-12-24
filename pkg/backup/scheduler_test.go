@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/williamokano/pg_backuper/pkg/config"
 )
 
@@ -55,12 +57,8 @@ func TestFindShortestTierInterval(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotDuration, gotTierName := findShortestTierInterval(tt.tiers)
-			if gotDuration != tt.wantDuration {
-				t.Errorf("findShortestTierInterval() duration = %v, want %v", gotDuration, tt.wantDuration)
-			}
-			if gotTierName != tt.wantTierName {
-				t.Errorf("findShortestTierInterval() tierName = %v, want %v", gotTierName, tt.wantTierName)
-			}
+			assert.Equal(t, tt.wantDuration, gotDuration, "duration mismatch")
+			assert.Equal(t, tt.wantTierName, gotTierName, "tier name mismatch")
 		})
 	}
 }
@@ -119,9 +117,7 @@ func TestIsBackupForDatabase(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := isBackupForDatabase(tt.filename, tt.dbName)
-			if got != tt.want {
-				t.Errorf("isBackupForDatabase(%q, %q) = %v, want %v", tt.filename, tt.dbName, got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "isBackupForDatabase(%q, %q) mismatch", tt.filename, tt.dbName)
 		})
 	}
 }
@@ -129,9 +125,7 @@ func TestIsBackupForDatabase(t *testing.T) {
 func TestFindLastBackupTime(t *testing.T) {
 	// Create temporary directory for test
 	tmpDir, err := os.MkdirTemp("", "backup-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	require.NoError(t, err, "Failed to create temp dir")
 	defer os.RemoveAll(tmpDir)
 
 	// Create test backup files
@@ -148,39 +142,28 @@ func TestFindLastBackupTime(t *testing.T) {
 
 	for _, tf := range testFiles {
 		filePath := filepath.Join(tmpDir, tf.filename)
-		if err := os.WriteFile(filePath, []byte("test"), 0644); err != nil {
-			t.Fatalf("Failed to create test file: %v", err)
-		}
+		err := os.WriteFile(filePath, []byte("test"), 0644)
+		require.NoError(t, err, "Failed to create test file")
 	}
 
 	// Test finding last backup
 	lastTime, err := findLastBackupTime(tmpDir, "mydb")
-	if err != nil {
-		t.Fatalf("findLastBackupTime() error = %v", err)
-	}
+	require.NoError(t, err)
 
 	// Expected time: 2025-12-17T03:00:00
 	expectedTime := time.Date(2025, 12, 17, 3, 0, 0, 0, time.UTC)
-	if !lastTime.Equal(expectedTime) {
-		t.Errorf("findLastBackupTime() = %v, want %v", lastTime, expectedTime)
-	}
+	assert.True(t, lastTime.Equal(expectedTime), "findLastBackupTime() = %v, want %v", lastTime, expectedTime)
 
 	// Test with non-existent database
 	lastTime, err = findLastBackupTime(tmpDir, "nonexistent")
-	if err != nil {
-		t.Fatalf("findLastBackupTime() error = %v", err)
-	}
-	if !lastTime.IsZero() {
-		t.Errorf("findLastBackupTime() for nonexistent db = %v, want zero time", lastTime)
-	}
+	require.NoError(t, err)
+	assert.True(t, lastTime.IsZero(), "findLastBackupTime() for nonexistent db = %v, want zero time", lastTime)
 }
 
 func TestIsBackupDue(t *testing.T) {
 	// Create temporary directory for test
 	tmpDir, err := os.MkdirTemp("", "backup-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	require.NoError(t, err, "Failed to create temp dir")
 	defer os.RemoveAll(tmpDir)
 
 	logger := zerolog.Nop()
@@ -227,9 +210,8 @@ func TestIsBackupDue(t *testing.T) {
 			for _, tier := range tt.tiers {
 				filename := twoHoursAgo.Format(fmt.Sprintf("mydb--%s--2006-01-02T15-04-05.backup", tier.Tier))
 				filePath := filepath.Join(tmpDir, filename)
-				if err := os.WriteFile(filePath, []byte("test backup data"), 0644); err != nil {
-					t.Fatalf("Failed to create test file: %v", err)
-				}
+				err := os.WriteFile(filePath, []byte("test backup data"), 0644)
+				require.NoError(t, err, "Failed to create test file")
 			}
 
 			cfg := &config.Config{
@@ -246,13 +228,8 @@ func TestIsBackupDue(t *testing.T) {
 			}
 
 			isDue, err := IsBackupDue(cfg, db, now, logger)
-			if err != nil {
-				t.Fatalf("IsBackupDue() error = %v", err)
-			}
-
-			if isDue != tt.wantDue {
-				t.Errorf("IsBackupDue() = %v, want %v", isDue, tt.wantDue)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDue, isDue, "IsBackupDue() mismatch")
 
 			// Clean up test files for next iteration
 			for _, tier := range tt.tiers {
@@ -267,9 +244,7 @@ func TestIsBackupDue(t *testing.T) {
 func TestIsBackupDue_NoExistingBackup(t *testing.T) {
 	// Create temporary directory for test
 	tmpDir, err := os.MkdirTemp("", "backup-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	require.NoError(t, err, "Failed to create temp dir")
 	defer os.RemoveAll(tmpDir)
 
 	logger := zerolog.Nop()
@@ -292,11 +267,6 @@ func TestIsBackupDue_NoExistingBackup(t *testing.T) {
 
 	// With no existing backup, should always be due
 	isDue, err := IsBackupDue(cfg, db, now, logger)
-	if err != nil {
-		t.Fatalf("IsBackupDue() error = %v", err)
-	}
-
-	if !isDue {
-		t.Errorf("IsBackupDue() with no existing backup = %v, want true", isDue)
-	}
+	require.NoError(t, err)
+	assert.True(t, isDue, "IsBackupDue() with no existing backup should be true")
 }

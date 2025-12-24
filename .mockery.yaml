@@ -1,0 +1,9 @@
+with-expecter: true
+dir: "{{.InterfaceDir}}/mocks"
+mockname: "Mock{{.InterfaceName}}"
+outpkg: mocks
+filename: "{{.InterfaceNameSnake}}.go"
+packages:
+  github.com/williamokano/pg_backuper/pkg/storage:
+    interfaces:
+      Backend:

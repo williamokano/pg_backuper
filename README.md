@@ -355,8 +355,197 @@ go build -o migrate ./cmd/migrate
 # Build Docker image
 docker build -t pg_backuper:v2.0 .
 
-# Run tests
+# Run tests (see Testing section below)
 go test ./...
+```
+
+## Testing
+
+pg_backuper has comprehensive test coverage with both unit tests and integration tests.
+
+### Test Structure
+
+The test suite uses:
+- **testify/assert** and **testify/require** for assertions
+- **testify/mock** for mocking interfaces
+- **testcontainers** for integration testing with real PostgreSQL and S3
+- **Table-driven tests** for comprehensive scenario coverage
+
+### Running Tests
+
+**Unit tests only (fast, no external dependencies):**
+```bash
+go test -short -v ./...
+```
+
+**Integration tests only (slow, requires Docker):**
+```bash
+go test -tags=integration -v ./pkg/backup -timeout 10m
+```
+
+**All tests (unit + integration):**
+```bash
+go test -tags=integration -v ./... -timeout 10m
+```
+
+**Run tests for a specific package:**
+```bash
+go test -v ./pkg/backup
+go test -v ./pkg/rotation
+go test -v ./pkg/storage
+```
+
+### Test Coverage
+
+**Unit Tests:**
+- `pkg/rotation/date_test.go` - Date parsing and tier classification
+- `pkg/rotation/filename_test.go` - Backup filename generation and parsing
+- `pkg/rotation/rotation_test.go` - Retention policy application with mocked backends
+- `pkg/backup/scheduler_test.go` - Backup scheduling logic
+- `pkg/backup/pgpass_test.go` - PostgreSQL authentication file handling
+- `pkg/backup/executor_test.go` - Mock usage demonstrations
+- `pkg/storage/multi_test.go` - Parallel upload to multiple storage backends
+
+**Integration Tests:**
+- `pkg/backup/integration_s3_test.go` - Full backup workflow with PostgreSQL and S3 (LocalStack)
+
+### Test Patterns
+
+**Assertions with testify:**
+```go
+func TestSomething(t *testing.T) {
+    result, err := DoSomething()
+
+    // require stops execution on failure (use for setup)
+    require.NoError(t, err, "setup should not fail")
+
+    // assert continues execution (use for checks)
+    assert.Equal(t, expected, result, "result should match")
+    assert.True(t, result.Success, "operation should succeed")
+    assert.Len(t, items, 5, "should have 5 items")
+}
+```
+
+**Mocking storage backends:**
+```go
+func TestWithMock(t *testing.T) {
+    // Create mock backend
+    mockBackend := mocks.NewMockBackend(t)
+    mockBackend.On("Name").Return("test_backend")
+    mockBackend.On("Type").Return("s3")
+
+    // Setup expectations
+    mockBackend.On("Write",
+        mock.Anything,           // ctx
+        "/tmp/backup.tmp",       // source
+        "backup.backup",         // dest
+    ).Return(nil).Once()
+
+    // Execute code that uses backend
+    err := mockBackend.Write(ctx, "/tmp/backup.tmp", "backup.backup")
+
+    // Assertions
+    assert.NoError(t, err)
+    // Mock expectations verified automatically by testify
+}
+```
+
+**Table-driven tests:**
+```go
+func TestMultipleScenarios(t *testing.T) {
+    tests := []struct {
+        name     string
+        input    string
+        expected string
+    }{
+        {name: "scenario_1", input: "a", expected: "A"},
+        {name: "scenario_2", input: "b", expected: "B"},
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            result := Process(tt.input)
+            assert.Equal(t, tt.expected, result)
+        })
+    }
+}
+```
+
+### Integration Test Requirements
+
+Integration tests require Docker for running testcontainers:
+
+**Prerequisites:**
+- Docker daemon running
+- Sufficient disk space for PostgreSQL and LocalStack images
+- Network access to pull container images
+
+**Container images used:**
+- `postgres:16-alpine` - PostgreSQL database
+- `localstack/localstack:3.0` - S3-compatible storage
+
+**Test timeout:**
+Integration tests can take 5-10 minutes to complete due to:
+- Container startup time
+- Database initialization
+- Actual backup creation and verification
+
+### Mock Generation
+
+The project uses hand-crafted mocks in `pkg/storage/mocks/backend.go` that implement the `storage.Backend` interface.
+
+If you need to regenerate or modify mocks:
+1. Install mockery: `go install github.com/vektra/mockery/v2@v2.43.0`
+2. Update `.mockery.yaml` configuration
+3. Run: `mockery`
+
+**Note:** Current mocks were created manually due to import cycle issues with automatic generation.
+
+### Contributing Tests
+
+When adding new features:
+
+1. **Write unit tests first** - Test your logic in isolation with mocks
+2. **Use testify assertions** - More readable than manual `if` checks
+3. **Follow table-driven pattern** - For testing multiple scenarios
+4. **Add integration tests when needed** - For end-to-end workflows
+5. **Keep tests fast** - Mock external dependencies in unit tests
+6. **Document complex test scenarios** - Add comments explaining what you're testing
+
+**Example contribution:**
+```go
+// Good: Fast unit test with mock
+func TestBackupDatabase_Success(t *testing.T) {
+    mockBackend := mocks.NewMockBackend(t)
+    // ... setup mocks ...
+    result := BackupDatabase(cfg, db, time.Now(), []string{"daily"}, zerolog.Nop())
+    assert.True(t, result.Success)
+}
+
+// Also good: Integration test for full workflow
+// Add //go:build integration at the top
+func TestBackupToS3Integration(t *testing.T) {
+    if testing.Short() {
+        t.Skip("Skipping integration test in short mode")
+    }
+    // ... setup containers ...
+    // ... run real backup ...
+    // ... verify results ...
+}
+```
+
+### Continuous Integration
+
+For CI/CD pipelines:
+
+**Fast feedback (PR checks):**
+```bash
+go test -short -v ./...  # Unit tests only, completes in <10s
+```
+
+**Comprehensive validation (pre-release):**
+```bash
+go test -tags=integration -v ./... -timeout 10m  # All tests
 ```
 
 ## Migration from v1.0
